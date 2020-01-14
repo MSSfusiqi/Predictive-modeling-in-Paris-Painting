@@ -1,0 +1,158 @@
+---
+title: "Final_part_2"
+author: "Siqi Fu"
+date: "12/8/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r get package, echo=FALSE, warning=FALSE, message=FALSE}
+library(GGally)
+library(mice)
+library(dplyr)
+library(Hmisc)
+library(purrr)
+library(knitr)
+library(data.table)
+library(knitr)
+library(kableExtra)
+library(tibble)
+library(ggplot2)
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+load("paintings_train.Rdata") 
+load("paintings_test.Rdata")
+```
+
+
+```{r read-data, message=FALSE, warning=FALSE, include=FALSE}
+# combine dataset, add data type, 1 = train, 0 = test
+painting <- rbind(paintings_train
+                  %>% mutate(data_type = 1)
+                  , paintings_test 
+                  %>% mutate(data_type = 0)) %>%
+  # remove variables 
+  # Interm cor with type_intermed
+  # shape cor with  Surface_Rnd,Surface_Rect
+  select(-c(author, sale, lot,subject, authorstandard, winningbidder, material,count,Diam_in,Surface_Rnd,Surface_Rect,Interm, landsALL, lands_elem)) %>%
+  
+  # create a landscape type variable 0 = unknown, 1 = sc, 2=figs, 3=ment
+  mutate(landscape = if_else(lands_sc == 1, 1,
+                        if_else(lands_figs == 1, 2,
+                                if_else(lands_ment == 1 ,3,0))),
+  authorstyle = recode(authorstyle, "n/a" = 1, .default = 0 ),
+  # create new authorstyle variable
+  school_pntg = recode(school_pntg, "A" = "Other","G" = "Other", "S" = "Other", "X" = "Other" ),
+  winningbiddertype = recode(winningbiddertype, "BB" = "Other", "DB" = "Other","EB" = "Other",
+                             "ED" = "Other", "DD" = "Other", "EBC" = "Other")
+  ) %>%
+  # remove the categories
+  select(-c(lands_sc, lands_figs, lands_ment,mat)) %>%
+  # transmute variables
+  mutate_at( c("dealer", "origin_author", "origin_cat", 
+               "school_pntg","authorstyle",   "winningbiddertype","endbuyer","type_intermed",
+               "Shape", "materialCat","year"), as.factor)  %>%
+  mutate_at(c("Height_in", "Width_in") , log)
+#impute missing value in data
+imputed_Data <- mice(painting, m=2, maxit = 10, method = 'pmm', seed = 500)
+painting <-  complete(imputed_Data,2)
+```
+
+
+```{r clean ,echo=FALSE}
+# clean training data
+train <- painting %>%
+  filter(data_type == 1 )  %>%
+  select(-price) 
+# clean the test data
+test <- painting %>% 
+    filter(data_type == 0 )   %>% 
+  select(-c(price, logprice)) %>%
+  mutate(price = NA )
+```
+
+
+```{r train nueric}
+train_numeric <- train %>%
+     select_if(., is.numeric) %>%
+     select(-c("logprice","engraved","original","prevcoll",
+               "othartist","paired", "figures", "finished",
+               "lrgfont", "relig", "arch", "mytho", "peasant",
+               "othgenre", "singlefig","portrait", "still_life",
+               "discauth","history", "allegory", "pastorale","other",
+               "data_type", "landscape")) %>%
+cbind(logprice=train$logprice,. )
+```
+
+
+```{r train binary}
+train_binary <- train %>%
+     select_if(., is.numeric) %>%
+     select(c("logprice","engraved","original","prevcoll",
+               "othartist","paired", "figures", "finished",
+               "lrgfont", "relig", "arch", "mytho", "peasant",
+               "othgenre", "singlefig","portrait", "still_life",
+               "discauth","history", "allegory", "pastorale","other",
+               "data_type")) 
+
+```
+
+```{r train categorical}
+train_factor <- train %>%
+    select_if(., is.factor) %>%
+    mutate(landscape=train$landscape,material=train$mat_recode) %>% 
+    cbind(logprice=train$logprice,. )
+```
+
+
+
+```{r bayesian g pripr}
+library(devtools)
+suppressMessages(install_github("merliseclyde/BAS")) # current version
+library(BAS)
+painting.bma = bas.lm(logprice ~ .,
+data=train,
+prior="g-prior",
+alpha=nrow(train), # g = n
+modelprior=uniform(),
+method="deterministic") 
+image(mydf.bas)
+
+```
+
+
+```{r jzs}
+painting.ZS = bas.lm(logprice ~ .,
+data=train,
+prior="JZS", #Jeffreys Zellner-Siow
+modelprior=uniform(),
+method="deterministic") 
+```
+
+
+```{r mcmc}
+painting.bas =  bas.lm(Y ~ . , data=train,
+                prior="g-prior", a=nrow(train), modelprior=uniform(),
+                method="MCMC", MCMC.iterations = 200000, thin = 20)
+plot(mydf.bas)
+```
+
+
+```{r mcmc jzs}
+painting.ZS1 = bas.lm(Y ~ ., data=train,
+               prior="JZS", a=nrow(train), modelprior=uniform(),
+               method="MCMC", MCMC.iterations = 900000, thin = 20, 
+               initprobs="marg-eplogp")
+```
+
+```{r}
+
+
+
+```

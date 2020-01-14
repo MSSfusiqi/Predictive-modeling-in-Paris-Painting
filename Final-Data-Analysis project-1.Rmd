@@ -1,0 +1,258 @@
+---
+title: "Final Data Analysis Project"
+date:  "See Parts for Write-Up due Dates"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r, include=FALSE}
+library(GGally)
+library(dplyr)
+library(Hmisc)
+library(MASS)
+library(BAS)
+library(knitr)
+library(kableExtra)
+library(tibble)
+library(ggplot2)
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+```
+
+
+```{r define RMSE, include=FALSE}
+
+rmse = function(ypred, ytest) {
+  sqrt(mean((ypred-ytest)^2))
+}
+
+```
+
+### Read in Training Data
+
+To get started read in the training data:
+```{r read-data, echo=TRUE}
+load("paintings_train.Rdata")
+load("paintings_test.Rdata")
+```
+
+The Code Book is in the file `paris_paintings.md` provides more information about the data.
+
+## Part I: Simple Model 
+
+### EDA
+
+Using EDA and any numerical summaries get to know the data -  identify what you might consider the 10 best variables for predicting `logprice` using scatterplots with other variables represented using colors or symbols, scatterplot matrices or conditioning plots.  
+
+```{r data cleaning}
+
+ 
+train <- paintings_train %>% 
+  dplyr::select(-c( sale, lot, subject,author, winningbidder, material,price,mat,count,
+                   Height_in, Width_in, Surface_Rect, Diam_in, Surface_Rnd,
+                   lands_sc, lands_elem, lands_figs, lands_ment)) %>%
+  mutate_at( c("authorstandard" ,"dealer", "origin_author", "origin_cat", "school_pntg","authorstyle",        
+               "winningbiddertype","endbuyer","type_intermed","Shape", "materialCat" ), as.factor)
+
+train=na.omit(train)
+
+test <- paintings_test %>% 
+  dplyr::select(-c( sale, lot, subject,author, winningbidder, material,price,mat,count,
+                   Height_in, Width_in, Surface_Rect, Diam_in, Surface_Rnd,
+                   lands_sc, lands_elem, lands_figs, lands_ment)) %>%
+  
+  mutate_at( c("authorstandard", "dealer", "origin_author", "origin_cat", "school_pntg","authorstyle",        
+               "winningbiddertype","endbuyer","type_intermed","Shape", "materialCat" ), as.factor)
+
+```
+
+
+```{r EDA}
+
+# EDA of numeric variables
+train_numeric <- train %>%
+   select_if(., is.numeric)
+
+cor   =  rcorr(as.matrix(train_numeric))$r[,"logprice"] %>% data.frame() #%>%
+var_name = rcorr(as.matrix(train_numeric))$r %>% row.names()
+
+var_numeric = cbind(var_name, cor) %>%
+   rename(cor = ".") %>%
+   mutate(
+    cor_abs = abs(cor)) %>%
+    filter(var_name != "logprice" ,var_name != "count" ) %>%
+    arrange(cor)    %>%
+   slice(1:7)
+
+
+# EDA of factor variables and logprice: dealer, origin_author, type_intermed
+train_factor <- train%>%
+     select_if(., is.factor) %>%
+cbind(train$logprice,. )
+
+rcorr(train_factor$`train$logprice`, train_factor$dealer, type = "pearson")$r
+
+ggpairs(train_factor)
+ggsave(file = "./train_factor.pdf")
+
+```
+
+First we need to clean the data. There are a lot of NAN entries in this data set due to some mutually conflicting varaibles. For instance, a rectangular painting cannot have a circumference. We don't want to exclude observations with NANs because we'd lose most of the data. There are also some variables that are highly colienar, such as individual dimensions, and overall surface area of a given painting. We intuit that the overall size of the painting can add to it's magneificence and that individual dimensiosn are incidental, so we only use the overall surface area, slightly reducing the dimensionality of the problem. There are some variables that cannot be used for regression, such as 'subject', which is neither numerical nor categorical.  
+
+```{r AV Plots}
+
+car::avPlots(lm(logprice ~ ., data=train_numeric))
+
+```
+
+```{r PCA}
+#pca doesn't work on categorical variables
+train.pca <- train_numeric %>% 
+  dplyr::select(-c(logprice))
+
+art.pca <- prcomp(train.pca, center = TRUE,scale. = TRUE)
+art.origin <- c(train$origin_author)
+art.school <- c(train$school_pntg)
+art.bidder <- c(train$winningbiddertype)
+art.material <- c(train$materialCat)
+
+summary(art.pca)
+
+par(mfrow=c(2,2))
+ggbiplot(art.pca,choices=c(1,2), obs.scale = 5, ellipse=TRUE,groups=art.origin)
+ggbiplot(art.pca,choices=c(1,2), obs.scale = 5, ellipse=TRUE,groups=art.school)
+ggbiplot(art.pca,choices=c(1,2), obs.scale = 5, ellipse=TRUE,groups=art.bidder)
+ggbiplot(art.pca,choices=c(1,2), obs.scale = 5, ellipse=TRUE,groups=art.material)
+```
+
+
+Of the PCA vectors, there is no small subset that account for most of the variation in the data. While this is suboptimal for variable selection, it tells us that all our PCA vectors are closely equal in magnitude, with most on the order of explaining 7%-4% of the variance in the data. 
+
+
+### Build your first model
+
+In the first model predict the auction price `price` using the transformation `logprice` using at least 10 and up to 20 predictors and any interactions to build a model using linear regression. You may use stepwise model selection to simplify the model using AIC and/or BIC.  For reference, we will fit the null model to initialize the leaderboard, but replace model1 with your recommended model.
+
+
+```{r OLS, echo=TRUE}
+
+model0 = lm(logprice ~ 1, data=train) #null model
+model1 = lm(logprice ~ ., data=train)
+
+model1 = lm(logprice ~ . , data=train)
+kable(summary(model1)$coef, digits=c(0,2,2,2,-2))
+
+arm::binnedplot(fitted(model1), rstandard(model1))
+
+conf_OLS = confint(model1)
+lm1_df = data.frame(predictor = model1$coefficients, conf_OLS) %>% rownames_to_column() %>% 
+  arrange(desc(predictor))
+kable(lm1_df, col.names = c("Predictors", "Coeff", "2.5%", "97.5%"), digits = 3, align = 'c') 
+
+summary(model1)
+par(mfrow=c(2,2))
+plot(model1)
+
+```
+
+```{r AIC}
+AIC_lm = step(model1, trace = FALSE, k=2)
+summary(AIC_lm$coefficients)
+
+conf_step_AIC = confint(AIC_lm)
+aic_df = data.frame( betas = AIC_lm$coefficients, conf_step_AIC)  %>% 
+  rownames_to_column() %>% arrange(desc(betas))
+colnames(aic_df) = c("var", "coef", "lower", "upper")
+
+kable(aic_df ,  digits = 4, caption = "Confidence interval of $\\hat{\\beta}$", 
+      col.names = c("Predictor", "Coeffs", "2.5%", "97.5%"),
+      align = "c") 
+
+summary(AIC_lm)
+par(mfrow=c(2,2))
+plot(AIC_lm)
+```
+
+```{r BIC}
+
+BIC_lm = step(model1, k = log(nrow(train)))
+summary(BIC_lm$coefficients)
+
+conf_step_BIC = confint(BIC_lm)
+bic_df = data.frame( betas = BIC_lm$coefficients, conf_step_BIC)  %>% 
+  rownames_to_column() %>% arrange(desc(betas))
+colnames(bic_df) = c("var", "coef", "lower", "upper")
+
+kable(bic_df ,  digits = 4, caption = "Confidence interval of $\\hat{\\beta}$", 
+      col.names = c("Predictor", "Coeffs", "2.5%", "97.5%"),
+      align = "c")
+
+summary(BIC_lm)
+par(mfrow=c(2,2))
+plot(BIC_lm)
+```
+
+Save predictions and intervals.  
+```{r predict-model1, echo=FALSE}
+
+predictions = as.data.frame(
+  exp(predict(AIC_lm, newdata=paintings_test, 
+              interval = "pred")))
+save(predictions, file="predict-test.Rdata")
+
+```
+
+
+### Part I Write up *Last day to submit is Dec 7 by 5; accepted until Dec 6 (5 points off if late)*
+
+Once you are satisfied with your model, provide a write up of your data analysis project in a new Rmd file/pdf file: `Part-I-Writeup.Rmd` by copying over salient parts of your R notebook. The written assignment consists of five parts:
+
+1. Introduction: Summary of problem and objectives (5 points)
+
+2. Exploratory data analysis (10 points): must include three correctly labeled graphs and an explanation that highlight the most important features that went into your model building.
+
+3. Development and assessment of an initial model (10 points)
+
+* Initial model: must include a summary table and an explanation/discussion for variable selection and overall amount of variation explained. 
+
+* Model selection: must include a discussion
+
+* Residual: must include residual plot(s) and a discussion.  
+
+* Variables: must include table of coefficients and CI
+
+4. Summary and Conclusions (10 points)
+
+What is the (median) price for the "baseline" category if there are categorical or dummy variables in the model (add CI's)?  (be sure to include units!) Highlight important findings and potential limitations of your model.  Does it appear that interactions are important?  What are the most important variables and/or interactions?  Provide interprations of how the most important variables influence the (median) price giving a range (CI).  Correct interpretation of coefficients for the log model desirable for full points.
+
+Provide recommendations for the art historian about features or combination of features to look for to find the most valuable paintings.
+
+_Points will be deducted for code chunks that should not be included, etc._
+
+*Upload write up  to Sakai any time before Dec 7th*
+
+###  Evaluation on test data for Part I
+
+Once your write up is submitted, your models will be evaluated on the following criteria based on predictions  on the test data (20 points): 
+
+* Bias:  Average (Yhat-Y)  positive values indicate the model tends to overestimate price (on average) while negative values indicate the model tends to underestimate price.
+
+* Maximum Deviation:  Max |Y-Yhat| -  identifies the worst prediction  made in the validation data set.
+
+* Mean Absolute Deviation:  Average |Y-Yhat| - the average error (regardless of sign).
+
+* Root Mean Square Error: Sqrt Average (Y-Yhat)^2
+
+* Coverage:  Average( lwr < Y < upr) 
+
+In order to have a passing wercker badge, your file for predictions needs to be the same length as the test data, with three columns:  fitted values, lower CI and upper CI values in that order with names, *fit*, *lwr*, and *upr* respectively such as in the code chunk below. 
+
+
+You will be able to see your scores on the score board.  They will be initialized by a prediction based on the mean in the training data.
+
+

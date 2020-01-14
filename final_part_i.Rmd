@@ -1,0 +1,357 @@
+---
+title: "Final Data Analysis Project"
+date:  "12.07.2018"
+author: "Group 2"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+# Introduction: Summary of problem and objectives
+
+```{r get package, echo=FALSE, warning=FALSE, message=FALSE}
+library(GGally)
+library(mice)
+library(dplyr)
+library(Hmisc)
+library(purrr)
+library(knitr)
+library(data.table)
+library(knitr)
+library(kableExtra)
+library(tibble)
+library(ggplot2)
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+load("paintings_train.Rdata") 
+load("paintings_test.Rdata")
+```
+
+## Problem
+
+Our task is to predict the price of paintings at auction using minimal predictors (10-20) from the Parisian auction house catalogue. There are several numeric and categorical predictors and some unique identifiers in this dataset. As is common in parametric modeling situations we initially have no idea which of these variables will be useful in our predictive model.
+
+## Solution
+
+Initially both the training and the testing dataset had to be cleaned. There are several variables that were recorded that we do not use in model fitting. The ‘author’, we would intuit is important, but there are too many authors to represent as a categorical variable given the constraint we have on the number of predictors. The ‘sale’ and ‘lot’ predictors are unique to each data point and are identifying tags. The ‘authorstandard’ predictor contains the same information as the ‘author’ predictor and was removed for similar reasons.The ‘winningbidder’ is also essentially a unique identifier with too many levels to represent as a numeric factor. The ‘price’ variable was dropped because it’s just an exponential transformation of our response variable. Many other categorical variables were expressed as numeric factors. Moreover, 'school_pntg', 'winningbiddertype', 'authorstyle' have too many categories and in some of the categories observations are scarce. We recode these variables by using aggregate categories with few observations into a “other categories”.
+
+In the training and testing dataset, there are a few variables that we express as factors where categories of the factor that may exist in the test dataset do not exist in the training set. This would ordinarily result in NAN predictions for observations of this factor. To remedy this, we merged the training and testing dataset into one dataframe, declared the levels of factor variables on that, and then broke the data back down into training and testing sets.
+
+
+```{r read-data, message=FALSE, warning=FALSE, include=FALSE}
+# combine dataset, add data type, 1 = train, 0 = test
+painting <- rbind(paintings_train
+                  %>% mutate(data_type = 1)
+                  , paintings_test 
+                  %>% mutate(data_type = 0)) %>%
+  # remove variables 
+  # Interm cor with type_intermed
+  # shape cor with  Surface_Rnd,Surface_Rect
+  select(-c(author, sale, lot,subject, authorstandard, winningbidder, material,count,Diam_in,Surface_Rnd,Surface_Rect,Interm, landsALL, lands_elem)) %>%
+  
+  # create a landscape type variable 0 = unknown, 1 = sc, 2=figs, 3=ment
+  mutate(landscape = if_else(lands_sc == 1, 1,
+                        if_else(lands_figs == 1, 2,
+                                if_else(lands_ment == 1 ,3,0))),
+  authorstyle = recode(authorstyle, "n/a" = 1, .default = 0 ),
+  # create new authorstyle variable
+  school_pntg = recode(school_pntg, "A" = "Other","G" = "Other", "S" = "Other", "X" = "Other" ),
+  winningbiddertype = recode(winningbiddertype, "BB" = "Other", "DB" = "Other","EB" = "Other",
+                             "ED" = "Other", "DD" = "Other", "EBC" = "Other")
+  ) %>%
+  # remove the categories
+  select(-c(lands_sc, lands_figs, lands_ment,mat)) %>%
+  # transmute variables
+  mutate_at( c("dealer", "origin_author", "origin_cat", 
+               "school_pntg","authorstyle",   "winningbiddertype","endbuyer","type_intermed",
+               "Shape", "materialCat","year"), as.factor)  %>%
+  mutate_at(c("Height_in", "Width_in") , log)
+#impute missing value in data
+imputed_Data <- mice(painting, m=2, maxit = 10, method = 'pmm', seed = 500)
+painting <-  complete(imputed_Data,2)
+```
+
+There are several numeric variables that we can intuitively combine. For instance, the individual dimensions and area of a given painting. Similarly the ‘rectangular surface area’ and ‘round surface area’ predictors all contarin the same information as the surface area predictor, so we remove the others. There are also several categorical variables that are all representation of a landscape scene; we combined these all into one categorical predictor. Lastly, we omit observations with missing (NAN) entries from the training dataset.
+
+Besides data manipulation, we are aware of the missing value in the test data. To address this problem, we implemented the data using a ”Predictive mean matching“. We use the mice package to implement the imputation with 10 iterations.
+
+
+```{r clean ,echo=FALSE}
+# clean training data
+train <- painting %>%
+  filter(data_type == 1 )  %>%
+  select(-price) 
+# clean the test data
+test <- painting %>% 
+    filter(data_type == 0 )   %>% 
+  select(-c(price, logprice)) %>%
+  mutate(price = NA )
+```
+
+
+# EDA
+
+## EDA of numeric, binary, and categorical variables
+
+Since we do not initially know what predictors are important, we did some exploratory data analysis (EDA). For convenience, we divide the data frame  into numeric, binary, and categorical. First we looked at scatter plots of the mutual correlation between numeric variables and found the variables that are most correlated with ‘logprice’, what we want to predict. In this plot we did see any obvious linear relationship between predictors `logprice`. (Codes of the remaining EDA are in RMD)
+
+```{r EDA for numeric, echo=FALSE}
+# EDA of numeric variables
+train_numeric <- train %>%
+     select_if(., is.numeric) %>%
+     select(-c("logprice","engraved","original","prevcoll",
+               "othartist","paired", "figures", "finished",
+               "lrgfont", "relig", "arch", "mytho", "peasant",
+               "othgenre", "singlefig","portrait", "still_life",
+               "discauth","history", "allegory", "pastorale","other",
+               "data_type", "landscape")) %>%
+cbind(logprice=train$logprice,. )
+# Scatterplot Matrices of numberic variables
+pairs(as.matrix(train_numeric[,1:length(train_numeric)]) ) 
+```
+
+We then plot the scatter plot matrix and boxplot for binary variables. From the boxplot, we find that some variables (`relig`,`arch`,`othartist`, `mytho`) are not significant in predicting `logprice`. We show the one of the visualization as follows (Codes of the remaining EDA are in RMD):
+
+
+```{r EDA for binary,echo=FALSE}
+# EDA of binary variables
+train_binary <- train %>%
+     select_if(., is.numeric) %>%
+     select(c("logprice","engraved","original","prevcoll",
+               "othartist","paired", "figures", "finished",
+               "lrgfont", "relig", "arch", "mytho", "peasant",
+               "othgenre", "singlefig","portrait", "still_life",
+               "discauth","history", "allegory", "pastorale","other",
+               "data_type")) 
+
+# Scatterplot Matrices of binary variables
+pairs(as.matrix(train_binary[,c(1, 1:10)]))
+#pairs(as.matrix(train_binary[,c(1, 11:15)]))
+#pairs(as.matrix(train_binary[,c(1, 16:20)]))#pairs(as.matrix(train_binary[,c(1, 21:23)]))
+
+```
+
+We also plot the boxplot, and did not find any obvious variable which is not significant in predicting `logprice`. 
+
+```{r EDA for categorical, echo=FALSE}
+# EDA of factor variables and logprice: dealer, origin_author, type_intermed
+train_factor <- train %>%
+    select_if(., is.factor) %>%
+    mutate(landscape=train$landscape,material=train$mat_recode) %>% 
+    cbind(logprice=train$logprice,. )
+# Scatterplot Matrices of categorical variables
+#ggpairs(train_factor, cardinality_threshold =20 )
+#ggsave(file = "./train_factor.pdf")
+# boxplot
+ggplot(train_factor, 
+    aes(y = logprice, x = factor(school_pntg)), color =  factor(school_pntg))+
+  geom_boxplot()+
+  ggtitle("school of painting") + 
+  xlab("school") +
+  scale_fill_discrete(
+    name = "",
+    labels=c("Dutch/Flemish","French","Italian","Other"))
+  
+```
+
+```{r additional eda ,include=FALSE,echo=FALSE}
+for(i in 2:13){
+ plot =  ggplot (data= train_factor, aes (y = logprice, x = factor(train_factor[,i]), col = factor(train_factor[,i])))+
+  geom_boxplot()+ggtitle(paste0(colnames(train_binary)[i]))
+  print(plot)
+}
+```
+
+## PCA
+
+We then did principal component analysis (PCA) to find directions that account for maximum variance in our data. What we were hoping to find was a few PCA vectors that account for a vast majority of the variance in our data. The direction of a PCA vector depends is related to a dimension of the data and this can be used as a means of variable selection on numeric variables. What we found is that the PCA vectors are all closely equal each accounting around 15% of the total variance of the data, with the exception of the first and the last. While this doesn’t inform our choice of variable selection it tells us that all the numeric variables are important. We then plotted all the data and PCA vectors, and grouped them by levels of some categorical variables that we intuitively assumed are important: the origin of the artists, the school of the artist, the winning bidder type, and the material of the art. If these classes are distinct, that might be able to tell us something about the categorical variables. For a hypothetical example, Dutch painters might tend toward painting portraits which have a specific shape, number of figures. However when we did this we found that the groups we looked at heavily overlapped, with no real information to distinguish them in PCA space.
+
+```{r include=FALSE,warning =FALSE, echo=FALSE}
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+```{r PCA, include=FALSE,echo=FALSE,warning=FALSE}
+#pca doesn't work on categorical variables
+train.pca <-  train %>%
+     select_if(., is.numeric) %>%
+     select(-c("logprice","engraved","original","prevcoll",
+               "othartist","paired", "figures", "finished",
+               "lrgfont", "relig", "arch", "mytho", "peasant",
+               "othgenre", "singlefig","portrait", "still_life",
+               "discauth","history", "allegory", "pastorale","other",
+               "data_type", "landscape")) 
+art.pca <- prcomp(train.pca, center = TRUE,scale. = TRUE)
+art.origin <- c(train$origin_author)
+art.school <- c(train$school_pntg)
+art.bidder <- c(train$winningbiddertype)
+art.material <- c(train$materialCat)
+summary(art.pca)
+
+
+par(mfrow=c(2,2))
+p1<-ggbiplot(art.pca,choices=c(1,2), ellipse=TRUE,groups=art.origin)
+p2<-ggbiplot(art.pca,choices=c(1,2), ellipse=TRUE,groups=art.school)
+p3<-ggbiplot(art.pca,choices=c(1,2), ellipse=TRUE,groups=art.bidder)
+p4<-ggbiplot(art.pca,choices=c(1,2), ellipse=TRUE,groups=art.material)
+
+multiplot(p1, p2, p3, p4, cols=2)
+```
+
+## Correlation Analysis
+
+In addition to the EDA plots, we also build a function to find the correlation between predictors and the response variable to get an idea for what are the most important predictive variables. We find the top 35 most correlated predictors do not include any insignificant predictors based on the EDA plot. So we build the initial model based on these 35 predictors and for further model selection.
+
+We select ten variables using corrleation analysis as follows:
+
+```{r correlation analysis,echo=F,warning=FALSE}
+# correlation analysis
+a = map_df(train, function(x){ rcorr(train$logprice, x)$r[1,2]})  
+cor_tb <- cbind(colnames(a), transpose(a) ) %>% 
+  dplyr::filter(V1 < 1) %>% 
+  dplyr::rename(cor = "V1",
+                var = "colnames(a)" ) %>%
+  # create absolute value of cor
+  mutate(cor_abs = abs(cor)) %>%
+  arrange(desc(cor_abs))  
+#names of 10 variables selected using 
+cor_tb  %>% slice(1:10)  %>% select(var)
+```
+
+# Build your first model
+
+## OLS
+
+We then fit a linear model using ordinary least squares (OLS) using every predictor that we retained from the original dataset. We looked at the residual plots of the model. The normal QQ plot is a straight line which implies we’re not violating any assumption of the normal distribution. There are no outlier points of high leverage that are influencing our model.
+
+
+```{r model1, echo=FALSE, warning=FALSE}
+a = cor_tb  %>% slice(1:25)  %>% select(var) 
+var_list <-  c("logprice", as.vector(a$var))
+train1 <- train %>%
+  select_if( variable.names(.) %in% var_list) 
+## Null Model
+model0 = lm(logprice ~ 1, data=train1) #null model
+## OLS
+# full model
+model1 = lm(logprice ~ ., data=train1)
+# coefficients
+conf_OLS = confint(model1)
+lm1_df = data.frame(predictor = model1$coefficients, conf_OLS) %>% rownames_to_column() %>% 
+  arrange(desc(predictor)) %>%
+  filter(is.na(predictor) == F )
+
+kable(lm1_df, col.names = c("Predictors", "Coeff", "2.5%", "97.5%"), digits = 3, align = 'c') %>% 
+  kable_styling("striped") 
+
+# residual plot
+par(mfrow=c(2,2))
+plot(model1)
+```
+
+## AIC and BIC Stepwise Model Selection
+
+We then fit two other models using stepwise methods based on AIC and BIC. The best AIC model tends to be better at making predictions. The best BIC model tends to more closely relate to a ‘true model’. The step algorithm searches over all possible models and finds what model is best for each respective criterion, and is capable of variable selection. Since we are interested in making predictions we chose to use the best AIC model. Looking at the residual plots, there residuals are well behaved, the normalcy assumption is good and there are no influential outliers to sway the modell. We then fit a best AIC model using the top 15 predictors found during EDA that are most correlated with log price. Our final model was the best AIC model found with stepwise methods.Looking at the adjusted R squared, we see that the AIC model accounts for 67% of the variance in the data. In fact, AIC, BIC and OLS have very comperable R squared errors. 
+
+
+```{r aic, echo=FALSE, warning=FALSE}
+AIC_lm = step(model1, trace = FALSE, k=2,direction = "both")
+#summary(AIC_lm)
+conf_step_AIC = confint(AIC_lm)
+aic_df = data.frame( betas = AIC_lm$coefficients, conf_step_AIC)  %>% 
+  rownames_to_column() %>% arrange(desc(betas))
+colnames(aic_df) = c("var", "coef", "lower", "upper")
+
+kable(aic_df ,  digits = 4, caption = "Confidence interval of $\\hat{\\beta}$", 
+      col.names = c("Predictor", "Coeffs", "2.5%", "97.5%"),
+      align = "c") 
+
+
+par(mfrow=c(2,2))
+plot(AIC_lm)
+#summary(AIC_lm)
+```
+
+
+```{r bic, echo=FALSE, warning=FALSE}
+BIC_lm = step(model1, trace = F, k = log(nrow(train)))
+#summary(BIC_lm) # less better than AIC model 
+conf_step_BIC = confint(BIC_lm)
+bic_df = data.frame( betas = BIC_lm$coefficients, conf_step_BIC)  %>% 
+  rownames_to_column() %>% arrange(desc(betas)) 
+colnames(bic_df) = c("var", "coef", "lower", "upper")
+kable(bic_df ,  digits = 4, caption = "Confidence interval of $\\hat{\\beta}$", 
+      col.names = c("Predictor", "Coeffs", "2.5%", "97.5%"),
+      align = "c")
+
+
+# Diagnostics of AIC model
+par(mfrow=c(2,2))
+plot(BIC_lm)
+#summary(BIC_lm)
+```
+
+#Save predictions and intervals
+
+AIC turns out to be better.
+```{r predict-model1, echo=FALSE}
+# AIC is the best, save AIC model
+predictions = as.data.frame(
+  exp(predict(AIC_lm, newdata=test, 
+              interval = "pred")))
+save(predictions, file="predict-test.Rdata")
+```
+
+
+# Conclusion
+
+In summary we are interested in predicting the price of a paintings using 10-20 predictors of the 50 given in the dataset. We performed some data cleaning by removing some variables, combing collinear variables and expressing categories as factors. We then did EDA and found the variables most correlated with price. We then did PCA to try and do variable selection on the numeric variables but it was not informative for variable selection. We then fit an OLS model using every predictor and checked the residual plots to identify any potential outliers and check our assumptions of normality. We then fit two other models using AIC and BIC criteria and ultimately settled on our best AIC model. Given the limit of predictors required by the task, we did not investigate any interactions but acknowledge the possibility that they are important. The median prediction of price is approximately 150 livre. But the prediction intervals of each painting can vary widely. Considering this is data from an auction house, the maximum ranges of prediction intervals tend to be on the orders of thousands of livre but this is not surprising as wealthy art patrons would try to outbid each other for these painting the price might go up dramatically. 
+
+For the art historian, when predicitng the price of a painting there are a few factors to consider. The year it was made, the school of painting, the author style, the dealer, and the authenticity of the painting (as verified by the dealer) are important, with older paintings being more valuable. We intuit that more reputable dealers with more authentic artwork sell higher. Additionally, the height, width, and shape of the painting are important, a larger painting is more grandiose and impressive. The subjects of high selling paintings tend to have many figures or still life images, or a more generic scene. Certain end buyers seem willing to pay more, which is why that factor is important to the final model. Certain advertising techniques like a the dealer devoting an extra paragraph about the painting in the catalogue, which might have a meaningful interaction with the dealer to be investigated in the future.
